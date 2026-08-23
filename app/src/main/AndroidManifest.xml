@@ -130,6 +130,51 @@
             </intent-filter>
         </activity-alias>
 
+        <!--
+             Fallback path for stock, unrooted firmware, where CAPTURE_AUDIO_OUTPUT and
+             CONTROL_INCALL_EXPERIENCE cannot be granted. These components are inert when BCR is
+             installed as a system app because RecorderInCallService handles calls instead.
+        -->
+
+        <service
+            android:name=".fallback.FallbackRecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Lets the user grant the call screening role so recordings can be named per contact. -->
+        <service
+            android:name=".fallback.FallbackCallScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".fallback.CallRecorderAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ACTION_PHONE_STATE is exempt from the implicit broadcast restrictions. -->
+        <receiver
+            android:name=".fallback.PhoneStateReceiver"
+            android:exported="true"
+            android:permission="android.permission.READ_PHONE_STATE">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+
         <!-- Must be exported to work. -->
         <receiver
             android:name=".settings.DialerCodeReceiver"

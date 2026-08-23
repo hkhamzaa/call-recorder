@@ -225,6 +225,9 @@
     <string name="audio_source_voice_uplink_downlink">Uplink + downlink\n(Stereo, separate channels)</string>
     <string name="audio_source_voice_uplink">Uplink only (Mono)</string>
     <string name="audio_source_voice_downlink">Downlink only (Mono)</string>
+    <string name="audio_source_mic">Microphone (Mono)</string>
+    <string name="audio_source_voice_recognition">Microphone, unprocessed (Mono)</string>
+    <string name="audio_source_voice_communication">Microphone, echo cancelled (Mono)</string>
     <string name="audio_source_stereo_warning">Very few devices support stereo recording. If recording fails or is missing audio, switch to a mono audio source.</string>
 
     <!-- Min duration dialog -->
@@ -266,6 +269,35 @@
         <item quantity="other">The recording will be deleted at the end of the call if it is shorter than %d seconds. Tap Restore to keep the recording.</item>
     </plurals>
     <string name="notification_internal_android_error">The recording failed in an internal Android component (%s). This device or firmware might not support call recording.</string>
+    <string name="notification_message_fallback_mode">Microphone mode: the other party is only captured through the earpiece. Use speakerphone for a usable two-way recording.</string>
+    <string name="notification_message_fallback_waiting">Waiting for the call to be answered…</string>
+
+    <!-- Non-root fallback mode -->
+    <string name="accessibility_service_label">Call recorder call detection</string>
+    <string name="accessibility_service_summary">Detects when a call screen is open so recording can start reliably.</string>
+    <string name="accessibility_service_description">Lets the call recorder notice when an in-call screen is in front, and read the other party\'s number from it so recordings can be named per contact. This does not improve audio quality and no data ever leaves the device.</string>
+
+    <string name="pref_contact_name_filenames_name">Name files after the contact</string>
+    <string name="pref_contact_name_filenames_desc">Name recordings after the contact, or the phone number if the contact is unknown, with no date or time in the name. Repeat calls get (1), (2), and so on. The date and time remain visible as the file\'s modification time. When off, your own filename template is used.</string>
+
+    <string name="pref_header_fallback">Non-root mode</string>
+    <string name="pref_fallback_status_name">Recording mode</string>
+    <string name="pref_fallback_status_privileged">System app — records true call audio</string>
+    <string name="pref_fallback_status_fallback">Microphone only — reduced quality</string>
+    <string name="pref_fallback_status_privileged_desc">BCR is installed as a system app and can capture the real call audio stream. Both sides of the call are recorded at full quality.</string>
+    <string name="pref_fallback_status_fallback_desc">BCR is installed as a normal app, so Android will not grant access to the call audio stream. Recordings capture your microphone. Your own voice is clear, but the other party is only picked up as sound leaking from the earpiece — turn on speakerphone for a usable two-way recording. This is an Android restriction that cannot be worked around without installing BCR as a system app (root/Magisk).</string>
+
+    <string name="pref_fallback_audio_source_name">Microphone source</string>
+    <string name="pref_fallback_audio_source_desc">Which microphone input to record from. \"Echo cancelled\" actively removes the other party\'s voice and is usually the worst choice here.</string>
+
+    <string name="pref_accessibility_service_name">Call detection service</string>
+    <string name="pref_accessibility_service_desc_enabled">Enabled. Call detection is more reliable.</string>
+    <string name="pref_accessibility_service_desc_disabled">Disabled. Tap to enable more reliable call detection in Android\'s accessibility settings.</string>
+
+    <string name="pref_call_screening_name">Caller ID for filenames</string>
+    <string name="pref_call_screening_desc_enabled">Granted. Recordings can be named using the caller\'s number and contact name.</string>
+    <string name="pref_call_screening_desc_disabled">Not granted. Recordings will be named by timestamp only. Tap to grant the call screening role.</string>
+    <string name="pref_call_screening_unsupported">Not available on this Android version.</string>
     <string name="notification_pure_silence_error">The recording was discarded because the audio was completely silent. This device might not support recording calls associated with the \'%s\' app.</string>
     <string name="notification_action_open">Open</string>
     <string name="notification_action_share">Share</string>

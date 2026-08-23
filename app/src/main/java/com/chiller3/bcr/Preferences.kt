@@ -52,6 +52,8 @@ class Preferences(initialContext: Context) {
         private const val PREF_RECORD_DIALING_STATE = "record_dialing_state"
         private const val PREF_NOTIFICATION_OPEN_DIR = "notification_open_dir"
         private const val PREF_NEXT_NOTIFICATION_ID = "next_notification_id"
+        private const val PREF_FALLBACK_AUDIO_SOURCE = "fallback_audio_source"
+        private const val PREF_CONTACT_NAME_FILENAMES = "contact_name_filenames"
 
         // Legacy preferences.
         private const val PREF_FORMAT_STEREO = "stereo"
@@ -63,6 +65,18 @@ class Preferences(initialContext: Context) {
                     "[_sim{sim_slot}|]" +
                     "[_{phone_number}|]" +
                     "[_[{contact_name}|{caller_name}|{call_log_name}]|]"
+        )
+
+        /**
+         * Names recordings after the contact, falling back to the phone number.
+         *
+         * Deliberately contains no timestamp. Duplicate names are disambiguated with `(1)`, `(2)`,
+         * and so on by [com.chiller3.bcr.output.OutputDirUtils]. The trailing `{date}` is only a
+         * safety net for calls with no contact, no caller ID, and no number (eg. withheld numbers),
+         * which would otherwise produce an empty filename.
+         */
+        val CONTACT_NAME_FILENAME_TEMPLATE = Template(
+            "[{contact_name}|{caller_name}|{call_log_name}|{phone_number}|{date}]"
         )
         val DEFAULT_RECORD_RULES = listOf(
             RecordRule(
@@ -262,6 +276,29 @@ class Preferences(initialContext: Context) {
             setDataAndType(uri, "vnd.android.document/directory")
         }
 
+    /**
+     * Whether to name recordings after the contact/number instead of using a timestamp.
+     *
+     * When enabled, this overrides [filenameTemplate] with [CONTACT_NAME_FILENAME_TEMPLATE]. The
+     * user's own template is preserved and takes effect again as soon as this is turned off.
+     *
+     * NOTE: file retention normally determines a recording's age by parsing the timestamp out of
+     * its filename. Names produced by this mode have no timestamp, so
+     * [com.chiller3.bcr.RecorderThread.processRetention] falls back to the file's last modified
+     * time instead.
+     */
+    var useContactNameFilenames: Boolean
+        get() = prefs.getBoolean(PREF_CONTACT_NAME_FILENAMES, false)
+        set(enabled) = prefs.edit { putBoolean(PREF_CONTACT_NAME_FILENAMES, enabled) }
+
+    /** The filename template actually used for generating output filenames. */
+    val effectiveFilenameTemplate: Template
+        get() = if (useContactNameFilenames) {
+            CONTACT_NAME_FILENAME_TEMPLATE
+        } else {
+            filenameTemplate ?: DEFAULT_FILENAME_TEMPLATE
+        }
+
     /** The user-specified filename template. */
     var filenameTemplate: Template?
         get() = prefs.getString(PREF_FILENAME_TEMPLATE, null)?.let { Template(it) }
@@ -406,6 +443,26 @@ class Preferences(initialContext: Context) {
     var recordDialingState: Boolean
         get() = prefs.getBoolean(PREF_RECORD_DIALING_STATE, false)
         set(enabled) = prefs.edit { putBoolean(PREF_RECORD_DIALING_STATE, enabled) }
+
+    /**
+     * Which microphone source the unprivileged fallback recorder uses.
+     *
+     * [AudioSource.MIC] is the default rather than [AudioSource.VOICE_COMMUNICATION] because the
+     * latter applies acoustic echo cancellation, which is specifically designed to remove the
+     * remote party's voice coming out of the earpiece. That is exactly the audio the fallback path
+     * depends on, so echo cancellation makes the recording noticeably worse.
+     */
+    var fallbackAudioSource: AudioSource
+        get() = prefs.getString(PREF_FALLBACK_AUDIO_SOURCE, null)
+            ?.let { AudioSource.getByName(it) }
+            ?.takeIf { !it.isPrivileged }
+            ?: AudioSource.MIC
+        set(source) = prefs.edit {
+            require(!source.isPrivileged) {
+                "Fallback recording cannot use a privileged audio source: $source"
+            }
+            putString(PREF_FALLBACK_AUDIO_SOURCE, source.name)
+        }
 
     /** Whether to open the directory instead of the file on completion notifications. */
     var notificationOpenDir: Boolean

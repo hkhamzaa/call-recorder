@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,6 +40,7 @@ import com.chiller3.bcr.Preferences
 import com.chiller3.bcr.R
 import com.chiller3.bcr.extension.DOCUMENTSUI_AUTHORITY
 import com.chiller3.bcr.extension.formattedString
+import com.chiller3.bcr.fallback.FallbackMode
 import com.chiller3.bcr.format.AudioSource
 import com.chiller3.bcr.format.Format
 import com.chiller3.bcr.format.NoParamInfo
@@ -77,6 +79,18 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val showLauncherIcon = remember(reloadPrefs) { prefs.showLauncherIcon }
     val isDebugMode = remember(reloadPrefs) { prefs.isDebugMode }
     val forceDirectBoot = remember(reloadPrefs) { prefs.forceDirectBoot }
+    val isPrivileged = remember(reloadPrefs) { FallbackMode.isPrivileged(context) }
+    val fallbackAudioSource = remember(reloadPrefs) { prefs.fallbackAudioSource }
+    val useContactNameFilenames = remember(reloadPrefs) { prefs.useContactNameFilenames }
+    val accessibilityEnabled = remember(reloadPrefs) {
+        FallbackMode.isAccessibilityServiceEnabled(context)
+    }
+    val callScreeningSupported = remember(reloadPrefs) {
+        FallbackMode.isCallScreeningSupported(context)
+    }
+    val callScreeningHeld = remember(reloadPrefs) {
+        FallbackMode.isCallScreeningRoleHeld(context)
+    }
 
     val requestPermissionRequired = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -140,6 +154,37 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             showLauncherIcon = showLauncherIcon,
             isDebugMode = isDebugMode,
             forceDirectBoot = forceDirectBoot,
+            isPrivileged = isPrivileged,
+            fallbackAudioSource = fallbackAudioSource,
+            useContactNameFilenames = useContactNameFilenames,
+            onUseContactNameFilenamesChange = { enabled ->
+                prefs.useContactNameFilenames = enabled
+                reloadPrefs++
+            },
+            accessibilityEnabled = accessibilityEnabled,
+            callScreeningSupported = callScreeningSupported,
+            callScreeningHeld = callScreeningHeld,
+            onFallbackAudioSourceChange = { source ->
+                prefs.fallbackAudioSource = source
+                reloadPrefs++
+            },
+            onAccessibilitySettings = {
+                try {
+                    requestSettings.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } catch (_: ActivityNotFoundException) {
+                    context.startActivity(Permissions.getAppInfoIntent(context))
+                }
+            },
+            onCallScreeningRoleRequest = {
+                val intent = FallbackMode.createCallScreeningRoleIntent(context)
+                if (intent != null) {
+                    try {
+                        requestSettings.launch(intent)
+                    } catch (_: ActivityNotFoundException) {
+                        context.startActivity(Permissions.getAppInfoIntent(context))
+                    }
+                }
+            },
             onCallRecordingChange = { enabled ->
                 if (!enabled || Permissions.haveRequired(context)) {
                     prefs.isCallRecordingEnabled = enabled
@@ -238,6 +283,16 @@ private fun SettingsContent(
     showLauncherIcon: Boolean,
     isDebugMode: Boolean,
     forceDirectBoot: Boolean,
+    isPrivileged: Boolean,
+    fallbackAudioSource: AudioSource,
+    useContactNameFilenames: Boolean,
+    onUseContactNameFilenamesChange: (Boolean) -> Unit,
+    accessibilityEnabled: Boolean,
+    callScreeningSupported: Boolean,
+    callScreeningHeld: Boolean,
+    onFallbackAudioSourceChange: (AudioSource) -> Unit,
+    onAccessibilitySettings: () -> Unit,
+    onCallScreeningRoleRequest: () -> Unit,
     onCallRecordingChange: (Boolean) -> Unit,
     onRecordRulesSettings: () -> Unit,
     onOutputDirSettings: () -> Unit,
@@ -257,6 +312,7 @@ private fun SettingsContent(
     contentPadding: PaddingValues = PaddingValues(),
 ) {
     var showMinDurationDialog by rememberSaveable { mutableStateOf(false) }
+    var showFallbackAudioSourceDialog by rememberSaveable { mutableStateOf(false) }
 
     PreferenceColumn(contentPadding = contentPadding) {
         item(key = "general") {
@@ -301,11 +357,109 @@ private fun SettingsContent(
         item(key = "output_format") {
             Preference(
                 onClick = onOutputFormatSettings,
-                shapes = BetterSegmentedShapes.bottom(),
+                shapes = BetterSegmentedShapes.middle(),
                 title = { Text(text = stringResource(R.string.pref_output_format_name)) },
                 summary = { Text(text = outputFormatSummary(savedFormat)) },
                 modifier = Modifier.animateItem(),
             )
+        }
+
+        item(key = "contact_name_filenames") {
+            SwitchPreference(
+                checked = useContactNameFilenames,
+                onCheckedChange = onUseContactNameFilenamesChange,
+                shapes = BetterSegmentedShapes.bottom(),
+                title = {
+                    Text(text = stringResource(R.string.pref_contact_name_filenames_name))
+                },
+                summary = {
+                    Text(text = stringResource(R.string.pref_contact_name_filenames_desc))
+                },
+                modifier = Modifier.animateItem(),
+            )
+        }
+
+        item(key = "fallback_header") {
+            PreferenceCategory(
+                title = { Text(text = stringResource(R.string.pref_header_fallback)) },
+                modifier = Modifier.animateItem(),
+            )
+        }
+
+        item(key = "fallback_status") {
+            Preference(
+                onClick = {},
+                enabled = false,
+                shapes = if (isPrivileged) {
+                    BetterSegmentedShapes.single()
+                } else {
+                    BetterSegmentedShapes.top()
+                },
+                title = { Text(text = stringResource(R.string.pref_fallback_status_name)) },
+                summary = { Text(text = fallbackStatusSummary(isPrivileged)) },
+                modifier = Modifier.animateItem(),
+            )
+        }
+
+        // The remaining options only affect the microphone fallback, so they are pointless when
+        // the app is installed as a system app and records the real call audio stream.
+        if (!isPrivileged) {
+            item(key = "fallback_audio_source") {
+                Preference(
+                    onClick = { showFallbackAudioSourceDialog = true },
+                    shapes = BetterSegmentedShapes.middle(),
+                    title = {
+                        Text(text = stringResource(R.string.pref_fallback_audio_source_name))
+                    },
+                    summary = { Text(text = stringResource(fallbackAudioSource.nameResId)) },
+                    modifier = Modifier.animateItem(),
+                )
+            }
+
+            item(key = "fallback_accessibility") {
+                Preference(
+                    onClick = onAccessibilitySettings,
+                    shapes = BetterSegmentedShapes.middle(),
+                    title = {
+                        Text(text = stringResource(R.string.pref_accessibility_service_name))
+                    },
+                    summary = {
+                        Text(
+                            text = stringResource(
+                                if (accessibilityEnabled) {
+                                    R.string.pref_accessibility_service_desc_enabled
+                                } else {
+                                    R.string.pref_accessibility_service_desc_disabled
+                                }
+                            )
+                        )
+                    },
+                    modifier = Modifier.animateItem(),
+                )
+            }
+
+            item(key = "fallback_call_screening") {
+                Preference(
+                    onClick = onCallScreeningRoleRequest,
+                    enabled = callScreeningSupported && !callScreeningHeld,
+                    shapes = BetterSegmentedShapes.bottom(),
+                    title = { Text(text = stringResource(R.string.pref_call_screening_name)) },
+                    summary = {
+                        Text(
+                            text = stringResource(
+                                if (!callScreeningSupported) {
+                                    R.string.pref_call_screening_unsupported
+                                } else if (callScreeningHeld) {
+                                    R.string.pref_call_screening_desc_enabled
+                                } else {
+                                    R.string.pref_call_screening_desc_disabled
+                                }
+                            )
+                        )
+                    },
+                    modifier = Modifier.animateItem(),
+                )
+            }
         }
 
         item(key = "advanced") {
@@ -448,6 +602,32 @@ private fun SettingsContent(
             },
         )
     }
+
+    if (showFallbackAudioSourceDialog) {
+        FallbackAudioSourceDialog(
+            audioSource = fallbackAudioSource,
+            onSelect = { source ->
+                onFallbackAudioSourceChange(source)
+                showFallbackAudioSourceDialog = false
+            },
+            onDismiss = {
+                showFallbackAudioSourceDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun fallbackStatusSummary(isPrivileged: Boolean) = buildString {
+    if (isPrivileged) {
+        append(stringResource(R.string.pref_fallback_status_privileged))
+        append("\n\n")
+        append(stringResource(R.string.pref_fallback_status_privileged_desc))
+    } else {
+        append(stringResource(R.string.pref_fallback_status_fallback))
+        append("\n\n")
+        append(stringResource(R.string.pref_fallback_status_fallback_desc))
+    }
 }
 
 @Composable
@@ -542,6 +722,16 @@ private fun PreviewSettingsScreen() {
                 showLauncherIcon = true,
                 isDebugMode = true,
                 forceDirectBoot = false,
+                isPrivileged = false,
+                fallbackAudioSource = AudioSource.MIC,
+                useContactNameFilenames = true,
+                onUseContactNameFilenamesChange = {},
+                accessibilityEnabled = false,
+                callScreeningSupported = true,
+                callScreeningHeld = false,
+                onFallbackAudioSourceChange = {},
+                onAccessibilitySettings = {},
+                onCallScreeningRoleRequest = {},
                 onCallRecordingChange = {},
                 onRecordRulesSettings = {},
                 onOutputDirSettings = {},

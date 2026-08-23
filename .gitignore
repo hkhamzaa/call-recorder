@@ -8,3 +8,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Kotlin build session directory
+.kotlin/
+
+# Local signing keys must never be committed
+*.jks
+*.keystore

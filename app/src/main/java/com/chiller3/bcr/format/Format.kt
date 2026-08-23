@@ -124,7 +124,17 @@ sealed class Format {
 
             formats
         }
-        private val default: Format = all.first()
+        /**
+         * M4A/AAC is the default because it plays on essentially anything (Android, iOS, Windows,
+         * WhatsApp), unlike Opus in an `.oga` container.
+         *
+         * MP3 is deliberately not offered: Android's [android.media.MediaCodec] provides an MP3
+         * decoder but no MP3 encoder, and [android.media.MediaMuxer] cannot write MP3 at all, so
+         * supporting it would mean bundling a native encoder such as LAME via the NDK.
+         *
+         * An explicit choice in the output format screen always wins over this.
+         */
+        private val default: Format = all.find { it is AacFormat } ?: all.first()
 
         /** Find output format by name. */
         fun getByName(name: String): Format? = all.find { it.name == name }

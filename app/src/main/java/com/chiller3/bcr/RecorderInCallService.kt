@@ -17,6 +17,7 @@ import android.util.Log
 import androidx.annotation.StringRes
 import com.chiller3.bcr.extension.threadIdCompat
 import com.chiller3.bcr.output.OutputFile
+import com.chiller3.bcr.output.TelecomCallSource
 import kotlin.random.Random
 
 class RecorderInCallService : InCallService(), RecorderThread.OnRecordingCompletedListener {
@@ -251,7 +252,7 @@ class RecorderInCallService : InCallService(), RecorderThread.OnRecordingComplet
             }
 
             val recorder = try {
-                RecorderThread(this, this, call)
+                RecorderThread(this, this, TelecomCallSource(this, call))
             } catch (e: Exception) {
                 notifications.notifyRecordingFailure(e.message, null, emptyList())
                 throw e

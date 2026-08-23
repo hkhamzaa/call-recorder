@@ -46,6 +46,43 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
                     redactor.redact(root.uri))
     }
 
+    /**
+     * Find a filename in [parent] that is not already taken, appending `(1)`, `(2)`, and so on.
+     *
+     * This matters for filename templates that do not include a timestamp, such as the contact-name
+     * naming mode, where every call with the same person would otherwise produce the same name. It
+     * is not merely cosmetic: for `file://` URIs, `DocumentFile.createFile()` returns the *existing*
+     * file when the name is taken, and the recorder opens it with truncation, which would destroy
+     * the previous recording.
+     *
+     * @param baseName Filename without an extension
+     */
+    private fun uniqueFilename(parent: DocumentFile, baseName: String, mimeType: String): String {
+        val extension = MimeTypeMap.getSingleton().getExtensionFromMimeTypeCompat(mimeType)
+
+        fun isTaken(name: String): Boolean {
+            val withExtension = if (extension.isNullOrEmpty()) { name } else { "$name.$extension" }
+
+            return parent.findFile(withExtension) != null || parent.findFile(name) != null
+        }
+
+        if (!isTaken(baseName)) {
+            return baseName
+        }
+
+        for (i in 1..MAX_DUPLICATE_SUFFIX) {
+            val candidate = "$baseName($i)"
+            if (!isTaken(candidate)) {
+                Log.d(TAG, "Deduplicated filename with suffix ($i)")
+                return candidate
+            }
+        }
+
+        // Give up and let the platform disambiguate however it wants.
+        Log.w(TAG, "Could not find a free filename after $MAX_DUPLICATE_SUFFIX attempts")
+        return baseName
+    }
+
     private fun createFile(root: DocumentFile, path: List<String>, mimeType: String): DocumentFile {
         require(path.isNotEmpty()) { "Path cannot be empty" }
 
@@ -53,14 +90,28 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
         val redactedRoot = redactor.redact(root.uri)
         Log.d(TAG, "Creating $redactedPath with MIME type $mimeType in $redactedRoot")
 
-        val file = root.createNestedFile(mimeType, path)
+        // Resolving the parent first is idempotent (createNestedFile would create the same
+        // directories anyway) and lets us check for an existing file of the same name.
+        val dedupedPath = try {
+            val parent = root.findOrCreateDirectories(path.dropLast(1))
+            if (parent != null) {
+                path.dropLast(1) + uniqueFilename(parent, path.last(), mimeType)
+            } else {
+                path
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to deduplicate filename; using it as-is", e)
+            path
+        }
+
+        val file = root.createNestedFile(mimeType, dedupedPath)
             ?: throw IOException("Failed to create file $redactedPath in $redactedRoot")
 
         // Some SAF providers fail to append the file extension, so we'll have to do it ourselves.
         // We just use the string length as a heuristic since an endsWith() check can fail if one
         // MIME type has multiple valid extensions (eg. oga and ogg).
         val name = file.name
-        if (name != null && name.length - path.last().length < 4) {
+        if (name != null && name.length - dedupedPath.last().length < 4) {
             Log.d(TAG, "SAF provider failed to append extension to $redactedPath")
 
             val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
@@ -175,8 +226,17 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
         require(targetPath.isNotEmpty()) { "Target path must not be empty" }
 
         val sourceFile = getExistingPath(sourceTree, sourcePath)
-        val targetParentPath = targetPath.dropLast(1)
+        val originalTargetPath = targetPath
+        val targetParentPath = originalTargetPath.dropLast(1)
         val targetParent = getOrCreateDirectory(targetTree, targetParentPath)
+
+        // Pick a free name up front so timestamp-less filenames (contact-name naming mode) don't
+        // collide with a previous call to the same person.
+        val finalTargetPath = targetParentPath + uniqueFilename(
+            targetParent,
+            originalTargetPath.last(),
+            mimeType,
+        )
 
         // Try to move efficiently if possible
         try {
@@ -200,7 +260,7 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
                         DocumentFile::renameTo,
                     )
                 }
-                val newFilename = targetPath.last()
+                val newFilename = finalTargetPath.last()
 
                 if (oldFilename != newFilename && !renameFunc(targetFile, newFilename)) {
                     // We intentionally don't report this error so that the user can be shown the
@@ -221,7 +281,7 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
                     "${redactor.redact(targetParent.uri)}: ${e.message}")
         }
 
-        val targetFile = createFile(targetTree, targetPath, mimeType)
+        val targetFile = createFile(targetTree, finalTargetPath, mimeType)
         copyAndDelete(sourceFile, targetFile)
         return targetFile
     }
@@ -279,6 +339,9 @@ class OutputDirUtils(private val context: Context, private val redactor: Redacto
 
     companion object {
         private val TAG = OutputDirUtils::class.java.simpleName
+
+        /** Highest `(n)` suffix tried when deduplicating a filename. */
+        private const val MAX_DUPLICATE_SUFFIX = 999
 
         val NULL_REDACTOR = object : Redactor {
             override fun redact(msg: String): String = msg

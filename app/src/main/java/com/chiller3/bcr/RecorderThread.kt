@@ -25,8 +25,9 @@ import com.chiller3.bcr.extension.toDocumentFile
 import com.chiller3.bcr.format.Encoder
 import com.chiller3.bcr.format.Format
 import com.chiller3.bcr.output.CallMetadata
-import com.chiller3.bcr.output.CallMetadataCollector
 import com.chiller3.bcr.output.CallMetadataJson
+import com.chiller3.bcr.output.CallSource
+import com.chiller3.bcr.output.TelecomCallSource
 import com.chiller3.bcr.output.DaysRetention
 import com.chiller3.bcr.output.FormatJson
 import com.chiller3.bcr.output.NoRetention
@@ -43,6 +44,9 @@ import com.chiller3.bcr.rule.RecordRule
 import kotlinx.serialization.json.Json
 import java.nio.ByteBuffer
 import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.min
@@ -59,13 +63,13 @@ import android.os.Process as AndroidProcess
  * kept in the object.
  * @param listener Used for sending completion notifications. The listener is called from this
  * thread, not the main thread.
- * @param parentCall Used for determining the output filename. References to it and its children are
- * kept in the object.
+ * @param callSource Used for determining the output filename, which numbers to evaluate record
+ * rules against, and which audio sources to capture. A reference is kept in the object.
  */
 class RecorderThread(
     private val context: Context,
     private val listener: OnRecordingCompletedListener,
-    private val parentCall: Call,
+    private val callSource: CallSource,
 ) : Thread(RecorderThread::class.java.simpleName) {
     private val tag = "${RecorderThread::class.java.simpleName}/$threadIdCompat"
     private val prefs = Preferences(context)
@@ -145,11 +149,10 @@ class RecorderThread(
         }
 
     // Filename
-    private val callMetadataCollector = CallMetadataCollector(context, parentCall)
     private val outputFilenameGenerator = OutputFilenameGenerator(context)
     private val dirUtils = OutputDirUtils(context, outputFilenameGenerator.redactor)
     val outputPath: OutputPath
-        get() = outputFilenameGenerator.generate(callMetadataCollector.callMetadata)
+        get() = outputFilenameGenerator.generate(callSource.callMetadata)
 
     private val minDuration: Int
 
@@ -169,7 +172,7 @@ class RecorderThread(
     private val sources: Array<Int>
 
     init {
-        Log.i(tag, "Created thread for call: $parentCall")
+        Log.i(tag, "Created thread for call: ${callSource.description}")
 
         minDuration = prefs.minDuration
 
@@ -178,11 +181,16 @@ class RecorderThread(
         formatParam = savedFormat.param
         sampleRate = savedFormat.sampleRate ?: format.sampleRateInfo.default
 
-        sources = savedFormat.audioSource.sources
+        // The unprivileged fallback path cannot open the VOICE_* sources, so it overrides whatever
+        // the user picked in the output format screen with a microphone source.
+        val audioSource = callSource.forcedAudioSource ?: savedFormat.audioSource
+        sources = audioSource.sources
+
+        Log.i(tag, "Recording from audio source: $audioSource")
     }
 
     fun onCallDetailsChanged(call: Call, details: Call.Details) {
-        callMetadataCollector.updateCallDetails(call, details)
+        (callSource as? TelecomCallSource)?.updateCallDetails(call, details)
         listener.onRecordingStateChanged(this)
     }
 
@@ -191,20 +199,12 @@ class RecorderThread(
             return
         }
 
-        val numbers = hashSetOf<PhoneNumber>()
-
-        if (parentCall.details.hasProperty(Call.Details.PROPERTY_CONFERENCE)) {
-            for (childCall in parentCall.children) {
-                childCall.details?.phoneNumber?.let { numbers.add(it) }
-            }
-        } else {
-            parentCall.details?.phoneNumber?.let { numbers.add(it) }
-        }
+        val numbers = callSource.phoneNumbers
 
         Log.i(tag, "Evaluating record rules for ${numbers.size} phone number(s)")
 
         val rules = prefs.recordRules ?: Preferences.DEFAULT_RECORD_RULES
-        val metadata = callMetadataCollector.callMetadata
+        val metadata = callSource.callMetadata
 
         val action = try {
             RecordRule.evaluate(context, rules, numbers, metadata.direction, metadata.simSlot)
@@ -287,7 +287,7 @@ class RecorderThread(
                     state = State.FINALIZING
                     listener.onRecordingStateChanged(this)
 
-                    callMetadataCollector.update(true)
+                    callSource.update(true)
                     val finalPath = outputPath
 
                     if (keepRecording == KeepState.KEEP) {
@@ -328,8 +328,7 @@ class RecorderThread(
                 }
                 additionalFiles.clear()
 
-                val packageName = parentCall.details.accountHandle.componentName.packageName
-                status = Status.Discarded(DiscardReason.Silence(packageName))
+                status = Status.Discarded(DiscardReason.Silence(callSource.packageName))
             } else {
                 val mediaFrame = e.stackTrace.find { it.className.startsWith("android.media.") }
                 val component = if (mediaFrame != null) {
@@ -488,7 +487,7 @@ class RecorderThread(
             )
             val metadataJson = CallMetadataJson(
                 context,
-                callMetadataCollector.callMetadata,
+                callSource.callMetadata,
                 outputJson,
             )
             val metadataBytes = JSON_FORMAT.encodeToString(metadataJson).toByteArray()
@@ -524,8 +523,14 @@ class RecorderThread(
      * Delete files older than the specified retention period.
      *
      * The "current time" is [CallMetadata.timestamp], not the actual current time. The timestamp of
-     * past recordings is based on the filename, not the file modification time. Incorrectly-named
-     * files are ignored.
+     * past recordings is normally based on the filename.
+     *
+     * When the filename has no parseable timestamp, the file's last modified time is used instead.
+     * This is required for the contact-name naming mode
+     * ([Preferences.useContactNameFilenames]), whose filenames intentionally contain no date. Since
+     * a recording is written when the call ends, its modification time is an accurate stand-in for
+     * the call time at the day granularity that retention uses. Files with neither signal are
+     * ignored, as before.
      */
     private fun processRetention() {
         val directory = prefs.outputDirOrDefault.toDocumentFile(context)
@@ -550,12 +555,16 @@ class RecorderThread(
             val redacted = OutputFilenameGenerator.redactTruncate(itemPath.joinToString("/"))
 
             val timestamp = outputFilenameGenerator.parseTimestampFromPath(itemPath)
+                ?: item.lastModified().takeIf { it > 0 }?.let {
+                    Log.d(tag, "Using last modified time for: $redacted")
+                    ZonedDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneId.systemDefault())
+                }
             if (timestamp == null) {
                 Log.w(tag, "Ignoring unrecognized path: $redacted")
                 continue
             }
 
-            val diff = Duration.between(timestamp, callMetadataCollector.callMetadata.timestamp)
+            val diff = Duration.between(timestamp, callSource.callMetadata.timestamp)
 
             if (diff > retention) {
                 Log.i(tag, "Deleting $redacted ($timestamp)")
